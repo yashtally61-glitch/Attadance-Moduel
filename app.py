@@ -726,8 +726,10 @@ with tab2:
                 rows['OT'].append(m2hm(r['ot']) if r['ot']>0 else '')
                 rows['Dur+OT'].append(m2hm(r['work']+r['ot']) if (r['work']+r['ot'])>0 else '')
 
-            view_df = pd.DataFrame(rows, index=['Status','InTime','OutTime','Duration','OT','Dur+OT'])
-            view_df.columns = [f"{d} {DAY_ABBR[d][:2]}" for d in range(1,29)]
+            view_df = pd.DataFrame.from_dict(
+                rows, orient='index',
+                columns=[f"{d} {DAY_ABBR[d][:2]}" for d in range(1,29)]
+            )
 
             def color_status(val):
                 colors = {'P':'background-color:#E3F2FD;color:#0D47A1;font-weight:bold',
