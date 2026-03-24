@@ -1,5 +1,5 @@
-streamlit
-pandas
-openpyxl
-plotly
-xlrd
+streamlit>=1.32.0
+pandas>=2.0.0
+openpyxl>=3.1.2
+plotly>=5.18.0
+xlrd>=2.0.1
