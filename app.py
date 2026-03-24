@@ -89,10 +89,6 @@ def m2hm(m):
     return f"{int(m//60)}:{int(m%60):02d}"
 
 def calc_day(d, in_t, out_t, si_t, so_t, is_open=False, std_hours=9.5):
-    """Returns dict with status, work_mins, ot_mins, late_mins, early_mins
-       is_open=True  → Open Shift: Duration=Out-In, no Late/Early, OT=Duration-std_hours
-       is_open=False → Fixed Shift: existing logic
-    """
     is_sun = d in SUNDAYS
     r = dict(status='', work=0, ot=0, late=0, early=0)
     if in_t is None and out_t is None:
@@ -116,7 +112,6 @@ def calc_day(d, in_t, out_t, si_t, so_t, is_open=False, std_hours=9.5):
         return r
 
     if is_open:
-        # Open shift: full actual hours, no capping, no Late/Early
         r['work']  = max(0, out_m - in_m)
         std_mins   = int(std_hours * 60)
         extra      = r['work'] - std_mins
@@ -127,10 +122,8 @@ def calc_day(d, in_t, out_t, si_t, so_t, is_open=False, std_hours=9.5):
     else:
         si_m = t2m(si_t) if si_t else 0
         so_m = t2m(so_t) if so_t else 0
-        # Grace + early snap
         eff_in_m = si_m if in_m <= si_m + 5 else in_m
         eff_in_m = max(si_m, eff_in_m)
-        # Duration capped at shift end
         r['work']  = max(0, min(out_m, so_m) - eff_in_m)
         r['late']  = max(0, eff_in_m - si_m) if eff_in_m > si_m else 0
         r['early'] = max(0, so_m - out_m) if out_m < so_m else 0
@@ -141,19 +134,34 @@ def calc_day(d, in_t, out_t, si_t, so_t, is_open=False, std_hours=9.5):
 
 def load_master(file):
     df = pd.read_excel(file, sheet_name=0, header=None)
-    df.columns = ['EmpCode','EmpName','Company','Department','Hour','Timing','ShiftIn','ShiftOut','Shift']
+    
+    # ── FIX: Drop fully-blank trailing columns before assigning names ──
+    df = df.dropna(axis=1, how='all')
+    
+    # Now assign column names based on actual column count
+    expected_cols = ['EmpCode','EmpName','Company','Department','Hour','Timing','ShiftIn','ShiftOut','Shift']
+    actual_cols = len(df.columns)
+    
+    if actual_cols >= len(expected_cols):
+        df = df.iloc[:, :len(expected_cols)]  # keep only first 9 columns
+        df.columns = expected_cols
+    else:
+        # Pad with dummy names if fewer columns than expected
+        dummy = [f'_col{i}' for i in range(actual_cols - len(expected_cols), 0)]
+        df.columns = expected_cols[:actual_cols] + dummy
+
     df = df.iloc[1:].reset_index(drop=True)
     df['ShiftInTime']  = df['ShiftIn'].apply(parse_time_str)
     df['ShiftOutTime'] = df['ShiftOut'].apply(parse_time_str)
     df['EmpCode'] = df['EmpCode'].apply(lambda x: int(float(str(x))) if not pd.isna(x) else x)
-    # Detect open shift: Shift column == 'Open Shift' OR ShiftIn/ShiftOut blank
+
     def is_open(row):
         shift_val = str(row['Shift']).strip().lower()
         if shift_val == 'open shift': return True
         if pd.isna(row['ShiftInTime']) or pd.isna(row['ShiftOutTime']): return True
         return False
     df['IsOpen'] = df.apply(is_open, axis=1)
-    # Standard hours from Hour column (used for open shift OT calculation)
+
     def get_std_hours(row):
         try: return float(str(row['Hour']).strip())
         except: return 9.5
@@ -219,7 +227,6 @@ def load_attendance(file):
     return att
 
 def get_gp_deduction(gate_passes, code, day):
-    """Return total gate pass deduction minutes for an employee on a given day"""
     total = 0
     for gp in gate_passes:
         if gp['code'] == code and gp['day'] == day:
@@ -227,7 +234,6 @@ def get_gp_deduction(gate_passes, code, day):
     return total
 
 def compute_summary(emp_df, attendance, gate_passes=None):
-    """Compute per-employee summary for dashboard"""
     if gate_passes is None: gate_passes = []
     rows = []
     for _, emp in emp_df.iterrows():
@@ -278,7 +284,6 @@ def compute_summary(emp_df, attendance, gate_passes=None):
     return pd.DataFrame(rows)
 
 def build_excel(emp_df, attendance, gate_passes=None):
-    """Generate the full Excel report — same logic as v7 + gate pass deductions"""
     if gate_passes is None: gate_passes = []
     thin=Side(style='thin'); med=Side(style='medium')
     def tb(): return Border(left=thin,right=thin,top=thin,bottom=thin)
@@ -355,7 +360,7 @@ def build_excel(emp_df, attendance, gate_passes=None):
                 si_t      = emp['ShiftInTime']; so_t = emp['ShiftOutTime']
                 is_open   = bool(emp.get('IsOpen', False))
                 std_hours = float(emp.get('StdHours', 9.5))
-                std_mins_frac = (std_hours * 60) / 1440.0   # as Excel fraction
+                std_mins_frac = (std_hours * 60) / 1440.0
 
                 siv = time_val(si_t); sov = time_val(so_t)
                 if is_open:
@@ -375,10 +380,9 @@ def build_excel(emp_df, attendance, gate_passes=None):
                 c.font=fn(True,9); c.fill=fl('E8F0E8' if is_open else 'E8F4FD')
                 c.alignment=al('left'); c.border=tb()
 
-                # Col B = ShiftIn (or blank for open), Col C = ShiftOut (or std_hours_frac for open)
                 c=ws.cell(HR,SHIFTIN_COL)
                 if is_open:
-                    c.value = None   # no fixed shift in for open
+                    c.value = None
                     c.font=fn(False,8,'2E7D32'); c.fill=fl('E8F0E8')
                 else:
                     c.value=siv; c.number_format='h:mm'
@@ -387,9 +391,8 @@ def build_excel(emp_df, attendance, gate_passes=None):
 
                 c=ws.cell(HR,SHIFTOUT_COL)
                 if is_open:
-                    # Store std hours as fraction so OT formula can reference it
                     c.value = std_mins_frac
-                    c.number_format='[h]:mm'  # shows as e.g. 9:30
+                    c.number_format='[h]:mm'
                     c.font=fn(False,8,'2E7D32'); c.fill=fl('E8F0E8')
                 else:
                     c.value=sov; c.number_format='h:mm'
@@ -414,7 +417,6 @@ def build_excel(emp_df, attendance, gate_passes=None):
                     ws.cell(RSP,col).fill=fl('DDE8F0')
 
                 si_ref=f"$B${HR}"; so_ref=f"$C${HR}"
-                # so_ref for open shift stores std_hours as time fraction (e.g. 9.5h = 9:30)
                 for d in range(1,29):
                     col=DAY1_COL+d-1; cl=get_column_letter(col); sun=d in SUNDAYS
                     dd=emp_att.get(d,{}); raw_in=dd.get('in'); raw_out=dd.get('out')
@@ -434,19 +436,15 @@ def build_excel(emp_df, attendance, gate_passes=None):
 
                     ir=f"{cl}{RI}"; or_=f"{cl}{RO}"
 
-                    # Gate pass deduction
                     gp_mins = get_gp_deduction(gate_passes, emp_code, d)
                     gp_frac = gp_mins / 1440.0
 
-                    # ── DURATION formula ──────────────────────
                     if is_open:
-                        # Open: full Out-In, no capping, no grace
                         if sun:
                             raw_dur = f'MAX(0,MIN({or_},TIME(16,0,0))-{ir})'
                         else:
                             raw_dur = f'MAX(0,{or_}-{ir})'
                     else:
-                        # Fixed: capped at shift end, grace applied
                         eff = f"MAX({si_ref},IF({ir}<={si_ref}+{GRACE_F},{si_ref},{ir}))"
                         if sun:
                             raw_dur = f'MAX(0,MIN({or_},TIME(16,0,0))-({eff}))'
@@ -463,8 +461,6 @@ def build_excel(emp_df, attendance, gate_passes=None):
                     c=ws.cell(RD,col); c.value=df_; c.number_format='[h]:mm'
                     c.font=fn(size=8); c.fill=fl(dur_fill); c.alignment=al(wrap=False); c.border=tb()
 
-                    # ── LATE BY ───────────────────────────────
-                    # Open shift: always blank (no late tracking)
                     if is_open or sun:
                         lf = '=""'
                     else:
@@ -472,8 +468,6 @@ def build_excel(emp_df, attendance, gate_passes=None):
                     c=ws.cell(RL,col); c.value=lf; c.number_format='[h]:mm'
                     c.font=fn(size=8,color='B85C00'); c.fill=fl('FFF3E0'); c.alignment=al(wrap=False); c.border=tb()
 
-                    # ── EARLY BY ──────────────────────────────
-                    # Open shift: always blank
                     if is_open or sun:
                         ef = '=""'
                     else:
@@ -481,12 +475,10 @@ def build_excel(emp_df, attendance, gate_passes=None):
                     c=ws.cell(RE,col); c.value=ef; c.number_format='[h]:mm'
                     c.font=fn(size=8,color='795548'); c.fill=fl('FFF8F0'); c.alignment=al(wrap=False); c.border=tb()
 
-                    # ── OT ────────────────────────────────────
                     dr_ref = f"{cl}{RD}"
                     if sun:
                         of = '=""'
                     elif is_open:
-                        # OT = Duration - StdHours (stored in $C$HR as time fraction)
                         of = (f'=IF({or_}="","",IF({dr_ref}>{so_ref}+{OT_F},'
                               f'{dr_ref}-{so_ref},""))')
                     else:
@@ -494,14 +486,12 @@ def build_excel(emp_df, attendance, gate_passes=None):
                     c=ws.cell(ROT,col); c.value=of; c.number_format='[h]:mm'
                     c.font=fn(size=8,color='2E7D32'); c.fill=fl('F0FFF4'); c.alignment=al(wrap=False); c.border=tb()
 
-                    # ── DUR+OT ────────────────────────────────
                     ot_ref=f"{cl}{ROT}"
                     dpf=(f'=IF(AND({dr_ref}="",{ot_ref}=""),"",IFERROR('
                          f'IF(ISNUMBER({dr_ref}),{dr_ref},0)+IF(ISNUMBER({ot_ref}),{ot_ref},0),""))')
                     c=ws.cell(RDP,col); c.value=dpf; c.number_format='[h]:mm'
                     c.font=fn(size=8,color='4A235A'); c.fill=fl('EEE8F7'); c.alignment=al(wrap=False); c.border=tb()
 
-                    # ── STATUS ────────────────────────────────
                     sf=(f'=IF(AND({ir}="",{or_}=""),"WO",IF(OR({ir}="",{or_}=""),"MISS","WOP"))' if sun
                         else f'=IF(AND({ir}="",{or_}=""),"A",IF(OR({ir}="",{or_}=""),"MISS","P"))')
                     c=ws.cell(RS,col); c.value=sf; c.font=fn(size=8)
@@ -554,7 +544,6 @@ for key in ['emp_df','attendance','summary_df','miss_edits','gate_passes']:
         st.session_state[key] = None
 if 'miss_edits' not in st.session_state or st.session_state.miss_edits is None:
     st.session_state.miss_edits = {}
-# gate_passes: list of dicts {code, name, day, gp_out, gp_in, duration_mins, reason, approved_by}
 if 'gate_passes' not in st.session_state or st.session_state.gate_passes is None:
     st.session_state.gate_passes = []
 
@@ -576,7 +565,6 @@ with st.sidebar:
                     emp_df = load_master(master_file)
                     attendance = load_attendance(att_file)
 
-                    # Cross-check
                     master_codes = set(emp_df['EmpCode'].tolist())
                     att_codes    = set(attendance.keys())
                     missing_from_master = att_codes - master_codes
@@ -591,6 +579,7 @@ with st.sidebar:
                         st.warning(f"⚠️ {len(missing_from_master)} employees in attendance not in master: {sorted(missing_from_master)}")
                 except Exception as e:
                     st.error(f"Error: {e}")
+                    st.exception(e)
 
     st.markdown("---")
     if st.session_state.emp_df is not None:
@@ -633,7 +622,6 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "👁️ View Report",
 with tab1:
     st.subheader("📊 Attendance Summary Dashboard")
 
-    # KPI row
     total_p   = summary_df['Present'].sum()
     total_a   = summary_df['Absent'].sum()
     total_wop = summary_df['WOP'].sum()
@@ -651,7 +639,6 @@ with tab1:
     col1, col2 = st.columns(2)
 
     with col1:
-        # Present/Absent/WO by company
         comp_data = summary_df.groupby('Company')[['Present','WOP','Absent','MISS']].sum().reset_index()
         fig = px.bar(comp_data.melt(id_vars='Company', var_name='Status', value_name='Days'),
                      x='Company', y='Days', color='Status', barmode='group',
@@ -661,7 +648,6 @@ with tab1:
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
-        # Top 10 late employees
         late_df = summary_df[['Name','_work_mins','_ot_mins','Late Days']].nlargest(10,'Late Days')
         fig2 = px.bar(late_df, x='Name', y='Late Days', title="Top 10 Late Employees",
                       color='Late Days', color_continuous_scale='Oranges')
@@ -670,7 +656,6 @@ with tab1:
 
     col3, col4 = st.columns(2)
     with col3:
-        # OT hours by company
         ot_data = summary_df.groupby('Company')['_ot_mins'].sum().reset_index()
         ot_data['OT Hrs'] = ot_data['_ot_mins']/60
         fig3 = px.pie(ot_data, names='Company', values='OT Hrs', title="OT Hours Distribution")
@@ -678,7 +663,6 @@ with tab1:
         st.plotly_chart(fig3, use_container_width=True)
 
     with col4:
-        # Work hrs distribution
         summary_df['Work Hrs Num'] = summary_df['_work_mins']/60
         fig4 = px.histogram(summary_df, x='Work Hrs Num', nbins=20,
                             title="Work Hours Distribution (All Employees)",
@@ -689,7 +673,6 @@ with tab1:
     st.markdown("---")
     st.subheader("📋 Full Summary Table")
 
-    # Filters
     fc1,fc2,fc3 = st.columns(3)
     sel_company = fc1.multiselect("Company", options=summary_df['Company'].unique(), default=list(summary_df['Company'].unique()))
     sel_dept    = fc2.multiselect("Department", options=summary_df['Department'].unique(), default=list(summary_df['Department'].unique()))
@@ -746,7 +729,6 @@ with tab2:
             view_df = pd.DataFrame(rows, index=['Status','InTime','OutTime','Duration','OT','Dur+OT'])
             view_df.columns = [f"{d} {DAY_ABBR[d][:2]}" for d in range(1,29)]
 
-            # Color status row
             def color_status(val):
                 colors = {'P':'background-color:#E3F2FD;color:#0D47A1;font-weight:bold',
                           'A':'background-color:#FFCDD2;color:#B71C1C;font-weight:bold',
@@ -758,7 +740,6 @@ with tab2:
             styled = view_df.style.applymap(color_status, subset=pd.IndexSlice[['Status'],:])
             st.dataframe(styled, use_container_width=True)
 
-            # Summary row
             sc1,sc2,sc3,sc4,sc5,sc6,sc7 = st.columns(7)
             sr = summary_df[summary_df['Code']==code]
             if not sr.empty:
@@ -776,7 +757,6 @@ with tab3:
     st.subheader("✏️ Fix MISS Punches")
     st.info("🟠 Orange cells below have a missing punch. Enter the missing time and click Save.")
 
-    # Find all MISS entries
     miss_list = []
     for _, emp in emp_df.iterrows():
         try:    code = int(float(str(emp['EmpCode'])))
@@ -786,7 +766,7 @@ with tab3:
         for d in range(1,29):
             dd = emp_att.get(d, {})
             in_t = dd.get('in'); out_t = dd.get('out')
-            if (in_t is None) != (out_t is None):  # exactly one is missing
+            if (in_t is None) != (out_t is None):
                 miss_list.append({
                     'Code': code, 'Name': str(emp['EmpName']),
                     'Company': str(emp['Company']), 'Department': str(emp['Department']),
@@ -838,7 +818,6 @@ with tab3:
                         if edit_key2 not in st.session_state.miss_edits:
                             st.session_state.miss_edits[edit_key2] = {}
                         st.session_state.miss_edits[edit_key2][missing_side] = t
-                        # Recompute summary
                         att_working[code][day][missing_side] = t
                         st.session_state.summary_df = compute_summary(emp_df, att_working, st.session_state.gate_passes)
                         st.success(f"✅ Saved {new_time} for {emp_name} Day {day}")
@@ -861,12 +840,10 @@ with tab4:
 
     gate_passes = st.session_state.gate_passes
 
-    # ── ADD NEW GATE PASS ──────────────────────
     with st.container(border=True):
         st.markdown("### ➕ Add New Gate Pass")
 
         ga, gb = st.columns(2)
-        # Employee selector
         emp_options = {f"{int(float(str(r['EmpCode'])))} — {r['EmpName']} ({r['Company']})": int(float(str(r['EmpCode'])))
                        for _, r in emp_df.iterrows()}
         selected_label = ga.selectbox("👤 Select Employee", options=list(emp_options.keys()), key="gp_emp")
@@ -904,20 +881,17 @@ with tab4:
                     'approved_by': gp_approved.strip() or '—',
                 }
                 st.session_state.gate_passes.append(new_gp)
-                # Recompute summary with new gate pass
                 st.session_state.summary_df = compute_summary(emp_df, att_working, st.session_state.gate_passes)
                 st.success(f"✅ Gate pass added for **{selected_name}** on Feb {gp_day} — {m2hm(dur)} deducted")
                 st.rerun()
 
     st.markdown("---")
 
-    # ── EXISTING GATE PASSES TABLE ─────────────
     if not gate_passes:
         st.info("📭 No gate passes recorded yet. Add one above.")
     else:
         st.markdown(f"### 📋 Recorded Gate Passes ({len(gate_passes)} total)")
 
-        # Filter controls
         gf1, gf2 = st.columns(2)
         gp_df_raw = pd.DataFrame(gate_passes)
 
@@ -935,7 +909,6 @@ with tab4:
             day_num = int(filter_day.split()[1])
             filtered_gp = [g for g in filtered_gp if g['day'] == day_num]
 
-        # Display table
         disp_rows = []
         for i, gp in enumerate(filtered_gp):
             disp_rows.append({
@@ -958,7 +931,6 @@ with tab4:
                          'In Time':  st.column_config.TextColumn('🔙 In',  width='small'),
                      })
 
-        # Summary by employee
         st.markdown("### 📊 Gate Pass Summary by Employee")
         gp_summary = {}
         for gp in gate_passes:
@@ -980,7 +952,6 @@ with tab4:
         st.dataframe(pd.DataFrame(sum_rows), use_container_width=True, hide_index=True)
 
         st.markdown("---")
-        # Delete controls
         st.markdown("### 🗑️ Delete a Gate Pass")
         del_col1, del_col2 = st.columns([3,1])
         del_options = {f"#{i} | {gp['name']} | {gp['date_str']} | {gp['gp_out']}–{gp['gp_in']} | {gp['reason']}": i
@@ -999,7 +970,6 @@ with tab4:
             st.session_state.summary_df = compute_summary(emp_df, att_working, st.session_state.gate_passes)
             st.rerun()
 
-        # Export gate passes to CSV
         st.markdown("---")
         if gate_passes:
             gp_export = pd.DataFrame([{
@@ -1022,7 +992,7 @@ with tab5:
     st.subheader("⬇️ Download Formula-Enabled Excel Report")
     st.markdown("""
     The downloaded Excel file includes:
-    - ✅ **8 company sheets** — each with all employees
+    - ✅ **Company sheets** — each with all employees
     - ✅ **9 rows per employee**: Status, InTime, OutTime, Duration, Late By, Early By, OT, Dur+OT
     - ✅ **All formulas live** — edit any InTime/OutTime and everything recalculates
     - ✅ **MISS punches** highlighted in orange — just type the missing time
@@ -1031,12 +1001,11 @@ with tab5:
     - ✅ **Gate pass deductions** applied to Duration where recorded
     """)
 
-    # Show gate pass summary if any
     if st.session_state.gate_passes:
         st.info(f"🚪 **{len(st.session_state.gate_passes)} gate passes** will be included in this report")
 
     if st.button("🔨 Generate Excel Report", type="primary", use_container_width=True):
-        with st.spinner("Building Excel report... this may take 30-60 seconds for 120 employees"):
+        with st.spinner("Building Excel report... this may take 30-60 seconds for large employee sets"):
             try:
                 buf = build_excel(emp_df, att_working, st.session_state.gate_passes)
                 st.download_button(
