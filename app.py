@@ -815,9 +815,9 @@ with tab1:
     st.markdown("---")
     st.subheader("📋 Full Summary Table")
     fc1, fc2, fc3 = st.columns(3)
-    sel_company = fc1.multiselect("Company",    options=summary_df['Company'].unique(),    default=list(summary_df['Company'].unique()))
-    sel_dept    = fc2.multiselect("Department", options=summary_df['Department'].unique(), default=list(summary_df['Department'].unique()))
-    show_miss   = fc3.checkbox("Show only MISS employees")
+    sel_company = fc1.multiselect("Company",    options=summary_df['Company'].unique(),    default=list(summary_df['Company'].unique()), key='dash_company')
+    sel_dept    = fc2.multiselect("Department", options=summary_df['Department'].unique(), default=list(summary_df['Department'].unique()), key='dash_dept')
+    show_miss   = fc3.checkbox("Show only MISS employees", key='dash_show_miss')
     filtered = summary_df[summary_df['Company'].isin(sel_company) & summary_df['Department'].isin(sel_dept)]
     if show_miss: filtered = filtered[filtered['MISS'] > 0]
     display_cols = ['Code', 'Name', 'Company', 'Department', 'Type', 'Shift', 'Present', 'WOP', 'W/Off',
@@ -961,14 +961,15 @@ with tab4:
         fm = mdf.copy()
         if f_comp != 'All': fm = fm[fm['Company'] == f_comp]
         if f_dept != 'All': fm = fm[fm['Department'] == f_dept]
-        for _, mr in fm.iterrows():
+        for row_idx, (_, mr) in enumerate(fm.iterrows()):
             code = mr['Code']; day = mr['Day']; ms = mr['_missing']
             ca, cb, cc, cd, ce = st.columns([3, 2, 2, 2, 1])
             ca.markdown(f"**{code} : {mr['Name']}**  \n`{mon_abbr} {day:02d} ({DAY_ABBR[day]})`")
             cb.markdown(f"**In:** `{mr['InTime']}`"); cc.markdown(f"**Out:** `{mr['OutTime']}`")
+            # Use row_idx to guarantee unique keys even if same code/day/ms appears twice
             nt = cd.text_input(f"Enter {'In' if ms == 'in' else 'Out'}Time", placeholder="e.g. 09:05",
-                               key=f"miss_{code}_{day}_{ms}", label_visibility='collapsed')
-            if ce.button("💾", key=f"save_{code}_{day}"):
+                               key=f"miss_input_{row_idx}", label_visibility='collapsed')
+            if ce.button("💾", key=f"miss_save_{row_idx}"):
                 if nt.strip():
                     t = parse_time_str(nt.strip())
                     if t:
@@ -1019,12 +1020,12 @@ with tab5:
         st.markdown(f"### 🔒 Fixed Shift — Override to Open ({len(fixed_emps)})")
         overrides = st.session_state.open_shift_overrides
         if not fixed_emps.empty:
-            for _, er in fixed_emps.iterrows():
+            for os_idx, (_, er) in enumerate(fixed_emps.iterrows()):
                 code = er['EmpCode']; name = str(er['EmpName']); dept = str(er['Department']); std = er['StdHours']
                 is_ov = code in overrides
                 c1, c2 = st.columns([4, 1])
                 c1.markdown(f"**{code}** — {name} `{dept}` Std:{std}h")
-                toggled = c2.checkbox("Open", value=is_ov, key=f"os_{code}")
+                toggled = c2.checkbox("Open", value=is_ov, key=f"os_override_{os_idx}")
                 if toggled and code not in overrides:
                     overrides.add(code)
                     emp_df.loc[emp_df['EmpCode'] == code, 'IsOpen'] = True
