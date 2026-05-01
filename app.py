@@ -147,23 +147,14 @@ def m2hm(m):
 def calc_day(d, in_t, out_t, si_t, so_t, is_open=False, std_hours=9.5):
     is_sun = d in SUNDAYS
     r = dict(status='', work=0, ot=0, late=0, early=0)
-    if in_t is None and out_t is None:
-        r['status'] = 'WO' if is_sun else 'A'
-        return r
     if in_t is None or out_t is None:
         r['status'] = 'MISS'
         return r
     in_m  = t2m(in_t)
     out_m = t2m(out_t)
     if is_sun:
-        cap = 16 * 60
-        if is_open:
-            r['work'] = max(0, min(out_m, cap) - in_m)
-        else:
-            si_m = t2m(si_t) if si_t else 0
-            eff_in_m = si_m if in_m <= si_m + 5 else in_m
-            eff_in_m = max(si_m, eff_in_m)
-            r['work'] = max(0, min(out_m, cap) - eff_in_m)
+        # Sunday: Duration = Out - In (simple), OT = 0 (so Dur+OT = Duration)
+        r['work'] = max(0, out_m - in_m)
         r['status'] = 'WOP'
         return r
     if is_open:
@@ -527,8 +518,14 @@ def build_excel(emp_df, attendance, gate_passes=None):
                     c.fill = fl(out_bg); c.font = fn(size=8); c.alignment = al(wrap=False); c.border = tb()
                     ir = f"{cl}{RI}"; or_ = f"{cl}{RO}"
                     gp_mins = get_gp_deduction(gate_passes, emp_code, d); gp_frac = gp_mins / 1440.0
-                    if is_open:
-                        raw_dur = (f'MAX(0,MIN({or_},TIME(16,0,0))-{ir})' if sun else f'MAX(0,{or_}-{ir})')
+                    if sun:
+                        # Sunday: Simple Out - In
+                        raw_dur = f'MAX(0,{or_}-{ir})'
+                    elif is_open:
+                        raw_dur = f'MAX(0,{or_}-{ir})'
+                    else:
+                        eff = f"MAX({si_ref},IF({ir}<={si_ref}+{GRACE_F},{si_ref},{ir}))"
+                        raw_dur = f'MAX(0,MIN({or_},{so_ref})-({eff}))'
                     else:
                         eff = f"MAX({si_ref},IF({ir}<={si_ref}+{GRACE_F},{si_ref},{ir}))"
                         raw_dur = (f'MAX(0,MIN({or_},TIME(16,0,0))-({eff}))' if sun else f'MAX(0,MIN({or_},{so_ref})-({eff}))')
@@ -547,9 +544,15 @@ def build_excel(emp_df, attendance, gate_passes=None):
                     c = ws.cell(RE, col); c.value = ef; c.number_format = '[h]:mm'
                     c.font = fn(size=8, color='795548'); c.fill = fl('FFF8F0'); c.alignment = al(wrap=False); c.border = tb()
                     dr_ref = f"{cl}{RD}"
-                    if sun: of = '=""'
-                    elif is_open: of = f'=IF({or_}="","",IF({dr_ref}>{so_ref}+{OT_F},{dr_ref}-{so_ref},""))'
-                    else: of = f'=IF({or_}="","",IF({or_}-{so_ref}>{OT_F},{or_}-{so_ref},""))'
+if sun:
+    # Sunday: OT = Duration (so Dur+OT will show Duration value)
+    # Since Dur+OT formula = Duration + OT, and we want Dur+OT = Duration,
+    # we set OT = 0 (because Duration + 0 = Duration)
+    of = '=""'
+elif is_open:
+    of = f'=IF({or_}="","",IF({dr_ref}>{so_ref}+{OT_F},{dr_ref}-{so_ref},""))'
+else:
+    of = f'=IF({or_}="","",IF({or_}-{so_ref}>{OT_F},{or_}-{so_ref},""))'
                     c = ws.cell(ROT, col); c.value = of; c.number_format = '[h]:mm'
                     c.font = fn(size=8, color='2E7D32'); c.fill = fl('F0FFF4'); c.alignment = al(wrap=False); c.border = tb()
                     ot_ref = f"{cl}{ROT}"
@@ -1231,6 +1234,90 @@ with tab8:
                     st.success("✅ Timing sheet ready!")
                 except Exception as e:
                     st.error(f"Error: {e}"); st.exception(e)
+
+    st.markdown("---")
+
+    # ── Night Shift Workers Report ──────────────────────────
+    with st.container(border=True):
+        st.markdown("### 🌙 Night Shift Workers Report")
+        st.markdown("""
+        - ✅ Employees who worked during night hours (In after 6 PM or Out before 6 AM)
+        - ✅ Shows all night shift instances across the month
+        - ✅ Includes In Time, Out Time, and Duration
+        """)
+        
+        if st.button("🌙 Generate Night Shift Report", type="primary", use_container_width=True, key='gen_night'):
+            with st.spinner("Identifying night shift workers..."):
+                try:
+                    night_workers = []
+                    mon_abbr_ns = calendar.month_abbr[MONTH]
+                    
+                    for _, emp in emp_df.iterrows():
+                        try: code = int(float(str(emp['EmpCode'])))
+                        except: code = str(emp['EmpCode'])
+                        
+                        name = str(emp['EmpName'])
+                        company = str(emp['Company'])
+                        dept = str(emp['Department'])
+                        emp_att = att_working.get(code, {})
+                        
+                        for d in range(1, NUM_DAYS + 1):
+                            dd = emp_att.get(d, {})
+                            in_t = dd.get('in')
+                            out_t = dd.get('out')
+                            
+                            if in_t and out_t:
+                                in_mins = t2m(in_t)
+                                out_mins = t2m(out_t)
+                                
+                                # Night shift: In after 18:00 (6 PM) OR Out before 06:00 (6 AM)
+                                is_night = (in_mins >= 18 * 60) or (out_mins <= 6 * 60)
+                                
+                                if is_night:
+                                    duration = max(0, out_mins - in_mins)
+                                    night_workers.append({
+                                        'Code': code,
+                                        'Name': name,
+                                        'Company': company,
+                                        'Department': dept,
+                                        'Date': f"{mon_abbr_ns} {d:02d}",
+                                        'Day': DAY_ABBR[d],
+                                        'In Time': in_t.strftime('%H:%M'),
+                                        'Out Time': out_t.strftime('%H:%M'),
+                                        'Duration': m2hm(duration),
+                                        'Shift Type': 'Late Night' if in_mins >= 18 * 60 else 'Early Morning'
+                                    })
+                    
+                    if night_workers:
+                        night_df = pd.DataFrame(night_workers)
+                        
+                        # Create CSV
+                        csv_buffer = io.StringIO()
+                        night_df.to_csv(csv_buffer, index=False)
+                        
+                        fname_night = f"NightShift_{MONTH_LABEL.replace(' ','_')}.csv"
+                        
+                        st.success(f"✅ Found {len(night_workers)} night shift instances across {len(set(nw['Code'] for nw in night_workers))} employees")
+                        
+                        # Preview
+                        st.markdown("**Preview (first 10 rows):**")
+                        st.dataframe(night_df.head(10), use_container_width=True, hide_index=True)
+                        
+                        st.download_button(
+                            f"📥 Download {fname_night}",
+                            data=csv_buffer.getvalue(),
+                            file_name=fname_night,
+                            mime="text/csv",
+                            use_container_width=True,
+                            type="primary",
+                            key='dl_night'
+                        )
+                    else:
+                        st.info("No night shift workers found in this period.")
+                        
+                except Exception as e:
+                    st.error(f"Error: {e}")
+                    st.exception(e)
 
     st.markdown("---")
 
