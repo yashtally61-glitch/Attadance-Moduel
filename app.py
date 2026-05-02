@@ -518,23 +518,22 @@ def build_excel(emp_df, attendance, gate_passes=None):
                     c.fill = fl(out_bg); c.font = fn(size=8); c.alignment = al(wrap=False); c.border = tb()
                     ir = f"{cl}{RI}"; or_ = f"{cl}{RO}"
                     gp_mins = get_gp_deduction(gate_passes, emp_code, d); gp_frac = gp_mins / 1440.0
+                    
                     if sun:
-                        # Sunday: Simple Out - In
                         raw_dur = f'MAX(0,{or_}-{ir})'
                     elif is_open:
                         raw_dur = f'MAX(0,{or_}-{ir})'
                     else:
                         eff = f"MAX({si_ref},IF({ir}<={si_ref}+{GRACE_F},{si_ref},{ir}))"
                         raw_dur = f'MAX(0,MIN({or_},{so_ref})-({eff}))'
-                    else:
-                        eff = f"MAX({si_ref},IF({ir}<={si_ref}+{GRACE_F},{si_ref},{ir}))"
-                        raw_dur = (f'MAX(0,MIN({or_},TIME(16,0,0))-({eff}))' if sun else f'MAX(0,MIN({or_},{so_ref})-({eff}))')
+                    
                     if gp_mins > 0:
                         df_ = f'=IF(OR({ir}="",{or_}=""),"",MAX(0,{raw_dur}-{gp_frac}))'
                         dur_fill = 'FFD580'
                     else:
                         df_ = f'=IF(OR({ir}="",{or_}=""),"",{raw_dur})'
                         dur_fill = 'E8F5E9' if is_open else 'F0F0FF'
+                    
                     c = ws.cell(RD, col); c.value = df_; c.number_format = '[h]:mm'
                     c.font = fn(size=8); c.fill = fl(dur_fill); c.alignment = al(wrap=False); c.border = tb()
                     lf = ('=""' if (is_open or sun) else f'=IF({ir}="","",IF({ir}>{si_ref}+{GRACE_F},{ir}-{si_ref},""))')
