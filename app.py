@@ -518,7 +518,6 @@ def build_excel(emp_df, attendance, gate_passes=None):
                     c.fill = fl(out_bg); c.font = fn(size=8); c.alignment = al(wrap=False); c.border = tb()
                     ir = f"{cl}{RI}"; or_ = f"{cl}{RO}"
                     gp_mins = get_gp_deduction(gate_passes, emp_code, d); gp_frac = gp_mins / 1440.0
-                    
                     if sun:
                         raw_dur = f'MAX(0,{or_}-{ir})'
                     elif is_open:
@@ -526,7 +525,6 @@ def build_excel(emp_df, attendance, gate_passes=None):
                     else:
                         eff = f"MAX({si_ref},IF({ir}<={si_ref}+{GRACE_F},{si_ref},{ir}))"
                         raw_dur = f'MAX(0,MIN({or_},{so_ref})-({eff}))'
-                    
                     if gp_mins > 0:
                         df_ = f'=IF(OR({ir}="",{or_}=""),"",MAX(0,{raw_dur}-{gp_frac}))'
                         dur_fill = 'FFD580'
@@ -1320,14 +1318,89 @@ with tab8:
 
     st.markdown("---")
 
+    # ── Night Shift Workers Report ──────────────────────────
+    with st.container(border=True):
+        st.markdown("### 🌙 Night Shift Workers Report")
+        st.markdown("""
+        - ✅ Employees who worked during night hours (In after 6 PM or Out before 6 AM)
+        - ✅ Shows all night shift instances across the month
+        - ✅ Includes In Time, Out Time, and Duration
+        """)
+        
+        if st.button("🌙 Generate Night Shift Report", type="primary", use_container_width=True, key='gen_night'):
+            with st.spinner("Identifying night shift workers..."):
+                try:
+                    night_workers = []
+                    mon_abbr_ns = calendar.month_abbr[MONTH]
+                    
+                    for _, emp in emp_df.iterrows():
+                        try: code = int(float(str(emp['EmpCode'])))
+                        except: code = str(emp['EmpCode'])
+                        
+                        name = str(emp['EmpName'])
+                        company = str(emp['Company'])
+                        dept = str(emp['Department'])
+                        emp_att = att_working.get(code, {})
+                        
+                        for d in range(1, NUM_DAYS + 1):
+                            dd = emp_att.get(d, {})
+                            in_t = dd.get('in')
+                            out_t = dd.get('out')
+                            
+                            if in_t and out_t:
+                                in_mins = t2m(in_t)
+                                out_mins = t2m(out_t)
+                                
+                                # Night shift: In after 18:00 (6 PM) OR Out before 06:00 (6 AM)
+                                is_night = (in_mins >= 18 * 60) or (out_mins <= 6 * 60)
+                                
+                                if is_night:
+                                    duration = max(0, out_mins - in_mins)
+                                    night_workers.append({
+                                        'Code': code,
+                                        'Name': name,
+                                        'Company': company,
+                                        'Department': dept,
+                                        'Date': f"{mon_abbr_ns} {d:02d}",
+                                        'Day': DAY_ABBR[d],
+                                        'In Time': in_t.strftime('%H:%M'),
+                                        'Out Time': out_t.strftime('%H:%M'),
+                                        'Duration': m2hm(duration),
+                                        'Shift Type': 'Late Night' if in_mins >= 18 * 60 else 'Early Morning'
+                                    })
+                    
+                    if night_workers:
+                        night_df = pd.DataFrame(night_workers)
+                        
+                        # Create CSV
+                        csv_buffer = io.StringIO()
+                        night_df.to_csv(csv_buffer, index=False)
+                        
+                        fname_night = f"NightShift_{MONTH_LABEL.replace(' ','_')}.csv"
+                        
+                        st.success(f"✅ Found {len(night_workers)} night shift instances across {len(set(nw['Code'] for nw in night_workers))} employees")
+                        
+                        # Preview
+                        st.markdown("**Preview (first 10 rows):**")
+                        st.dataframe(night_df.head(10), use_container_width=True, hide_index=True)
+                        
+                        st.download_button(
+                            f"📥 Download {fname_night}",
+                            data=csv_buffer.getvalue(),
+                            file_name=fname_night,
+                            mime="text/csv",
+                            use_container_width=True,
+                            type="primary",
+                            key='dl_night'
+                        )
+                    else:
+                        st.info("No night shift workers found in this period.")
+                        
+                except Exception as e:
+                    st.error(f"Error: {e}")
+                    st.exception(e)
+
+    st.markdown("---")
+
     # ── Issues Export ─────────────────────────
     if issues:
-        with st.container(border=True):
-            st.markdown("### ⚠️ Issues Report")
-            ie2 = pd.DataFrame([{'Severity': i['severity'], 'Category': i['category'],
-                                  'Emp Code': i['emp_code'], 'Emp Name': i['emp_name'], 'Detail': i['detail']}
-                                 for i in issues])
-            cb3 = io.StringIO(); ie2.to_csv(cb3, index=False)
-            st.download_button("📥 Download Issues CSV", data=cb3.getvalue(),
-                               file_name=f"DataIssues_{MONTH_LABEL.replace(' ','_')}.csv",
-                               mime="text/csv", use_container_width=True)
